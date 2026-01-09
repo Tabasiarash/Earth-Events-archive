@@ -34,7 +34,8 @@ const App: React.FC = () => {
 
   const [syncConfig, setSyncConfig] = useState<SyncConfig>(() => {
     const saved = localStorage.getItem(SYNC_CONFIG_KEY);
-    return saved ? JSON.parse(saved) : { enabled: false, intervalMinutes: 15, monitoredChannels: [] };
+    // Default: Enabled, 120 min interval (2 hours)
+    return saved ? JSON.parse(saved) : { enabled: true, intervalMinutes: 120, monitoredChannels: [] };
   });
   const [isBackgroundSyncing, setIsBackgroundSyncing] = useState(false);
 

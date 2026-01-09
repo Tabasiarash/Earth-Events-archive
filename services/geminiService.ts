@@ -423,7 +423,9 @@ export const parseIntelContent = async (inputContent: string, type: SourceType, 
     1. Identify discrete geographical events.
     2. ESTIMATE AND CALCULATE NUMBERS: 
        - Look for crowd sizes, participant counts, or protestor numbers. Use exact numbers if available.
-       - Look for casualties and CATEGORIZE them into: Dead (martyred/killed), Injured (wounded), and Detained (arrested/captured).
+       - Look for casualties and CATEGORIZE them into: 
+          a) CIVILIANS/PROTESTORS: Dead (martyred/killed), Injured (wounded), Detained.
+          b) SECURITY FORCES: Dead, Injured.
     3. BE GRANULAR: Separate entries for each city/location.
 
     EXTRACTION RULES:
@@ -446,6 +448,10 @@ export const parseIntelContent = async (inputContent: string, type: SourceType, 
          "dead": integer,
          "injured": integer,
          "detained": integer
+      },
+      "securityCasualties": {
+         "dead": integer,
+         "injured": integer
       }
     }]
   `;
@@ -481,6 +487,10 @@ export const parseIntelContent = async (inputContent: string, type: SourceType, 
         dead: item.casualties?.dead || 0,
         injured: item.casualties?.injured || 0,
         detained: item.casualties?.detained || 0
+      },
+      securityCasualties: {
+        dead: item.securityCasualties?.dead || 0,
+        injured: item.securityCasualties?.injured || 0
       },
       sourceType: type,
       sourceUrl: inputContent.split('\n')[0].replace('SOURCE_URL: ', '')

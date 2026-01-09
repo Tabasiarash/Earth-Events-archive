@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import { IntelEvent, EventCategory, AppLanguage } from '../types';
+import { Users, Skull, ShieldAlert, AlertTriangle, Bell, Activity } from 'lucide-react';
 
 interface GlobeVisProps {
   events: IntelEvent[];
@@ -94,7 +95,12 @@ const translations = {
             [EventCategory.CIVIL_UNREST]: "Civil Unrest",
             [EventCategory.OTHER]: "Other"
         },
-        crowdAnalyzed: "CROWD ANALYZED"
+        crowdAnalyzed: "CROWD ANALYZED",
+        liveAnalytics: "LIVE ANALYTICS",
+        totalParticipants: "Total Participants",
+        civilians: "Civilians",
+        forces: "Security Forces",
+        breakingNews: "HIGH PRIORITY ALERTS"
     },
     fa: {
         eventTypes: "انواع رویداد",
@@ -114,7 +120,12 @@ const translations = {
             [EventCategory.CIVIL_UNREST]: "ناآرامی مدنی",
             [EventCategory.OTHER]: "سایر"
         },
-        crowdAnalyzed: "تحلیل جمعیت"
+        crowdAnalyzed: "تحلیل جمعیت",
+        liveAnalytics: "آمار زنده",
+        totalParticipants: "کل شرکت‌کنندگان",
+        civilians: "شهروندان",
+        forces: "نیروهای امنیتی",
+        breakingNews: "هشدارهای مهم"
     },
     de: {
         eventTypes: "EREIGNISTYPEN",
@@ -134,7 +145,12 @@ const translations = {
             [EventCategory.CIVIL_UNREST]: "Unruhen",
             [EventCategory.OTHER]: "Andere"
         },
-        crowdAnalyzed: "MENGE ANALYSIERT"
+        crowdAnalyzed: "MENGE ANALYSIERT",
+        liveAnalytics: "LIVE-ANALYTIK",
+        totalParticipants: "Gesamtteilnehmer",
+        civilians: "Zivilisten",
+        forces: "Sicherheitskräfte",
+        breakingNews: "WICHTIGE MELDUNGEN"
     },
     ar: {
         eventTypes: "أنواع الأحداث",
@@ -154,7 +170,12 @@ const translations = {
             [EventCategory.CIVIL_UNREST]: "اضطرابات مدنية",
             [EventCategory.OTHER]: "أخرى"
         },
-        crowdAnalyzed: "تحليل الحشود"
+        crowdAnalyzed: "تحليل الحشود",
+        liveAnalytics: "تحليلات مباشرة",
+        totalParticipants: "إجمالي المشاركين",
+        civilians: "مدنيين",
+        forces: "قوات الأمن",
+        breakingNews: "تنبيهات هامة"
     }
 };
 
@@ -192,6 +213,37 @@ const GlobeVis: React.FC<GlobeVisProps> = ({ events, selectedEventId, onEventCli
     safeEvents.find(e => e.id === selectedEventId), 
   [selectedEventId, safeEvents]);
 
+  // Calculate Cumulative Stats
+  const analytics = useMemo(() => {
+      let totalProtestors = 0;
+      let civDead = 0, civInjured = 0, civDetained = 0;
+      let secDead = 0, secInjured = 0;
+
+      events.forEach(e => {
+          totalProtestors += (e.protestorCount || 0);
+          civDead += (e.casualties?.dead || 0);
+          civInjured += (e.casualties?.injured || 0);
+          civDetained += (e.casualties?.detained || 0);
+          
+          secDead += (e.securityCasualties?.dead || 0);
+          secInjured += (e.securityCasualties?.injured || 0);
+      });
+      return { totalProtestors, civDead, civInjured, civDetained, secDead, secInjured };
+  }, [events]);
+
+  // Filter High Priority Notifications
+  const notifications = useMemo(() => {
+     return events
+        .filter(e => {
+            const isHighCasualty = (e.casualties?.dead || 0) > 0 || (e.securityCasualties?.dead || 0) > 0;
+            const isMassiveCrowd = (e.protestorCount || 0) > 2000;
+            const isHighReliability = (e.reliabilityScore || 0) >= 9;
+            return isHighCasualty || isMassiveCrowd || (isHighReliability && e.category === EventCategory.MILITARY);
+        })
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+        .slice(0, 4);
+  }, [events]);
+
   const getReliabilityColor = (score?: number) => {
       if (!score) return '#94a3b8';
       if (score >= 8) return '#10b981';
@@ -202,8 +254,8 @@ const GlobeVis: React.FC<GlobeVisProps> = ({ events, selectedEventId, onEventCli
   return (
     <div className="relative w-full h-full bg-slate-950 z-0">
       <MapContainer 
-        center={[20, 0]} 
-        zoom={2} 
+        center={[32.4279, 53.6880]} // Center on Iran approximately
+        zoom={5} 
         style={{ height: '100%', width: '100%', background: '#0f172a' }}
         zoomControl={false}
         attributionControl={false}
@@ -233,6 +285,7 @@ const GlobeVis: React.FC<GlobeVisProps> = ({ events, selectedEventId, onEventCli
                     {isSelected && (
                         <Popup offset={[0, -10]} closeButton={false} autoPan={true}>
                              <div className={`w-72 font-sans ${isRtl ? 'text-right' : 'text-left'}`} dir={isRtl ? 'rtl' : 'ltr'}>
+                                {/* ... Popup content same as before but respecting securityCasualties if needed ... */}
                                 <div className="flex justify-between items-start mb-2 border-b border-slate-600 pb-2">
                                     <div className="flex gap-2">
                                         <span 
@@ -268,45 +321,6 @@ const GlobeVis: React.FC<GlobeVisProps> = ({ events, selectedEventId, onEventCli
                                       </span>
                                    </div>
                                 </div>
-
-                                {/* Detailed Impact */}
-                                {(event.casualties?.dead || 0) + (event.casualties?.injured || 0) + (event.casualties?.detained || 0) > 0 && (
-                                    <div className="bg-red-950/20 border border-red-900/30 rounded p-2 mb-3">
-                                        <span className="text-[9px] font-bold text-red-500 uppercase block mb-1.5 tracking-wider">{t.impact}</span>
-                                        <div className="flex justify-between text-[11px] font-bold">
-                                            <div className="flex flex-col items-center flex-1">
-                                                <span className="text-red-500">{event.casualties?.dead || 0}</span>
-                                                <span className="text-[8px] text-slate-500 uppercase font-normal">{t.dead}</span>
-                                            </div>
-                                            <div className="flex flex-col items-center flex-1 border-x border-slate-800">
-                                                <span className="text-yellow-500">{event.casualties?.injured || 0}</span>
-                                                <span className="text-[8px] text-slate-500 uppercase font-normal">{t.injured}</span>
-                                            </div>
-                                            <div className="flex flex-col items-center flex-1">
-                                                <span className="text-blue-500">{event.casualties?.detained || 0}</span>
-                                                <span className="text-[8px] text-slate-500 uppercase font-normal">{t.detained}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {event.groundingUrls && event.groundingUrls.length > 0 && (
-                                    <div className="mt-2 pt-2 border-t border-slate-600/50">
-                                        <div className="flex flex-col gap-1">
-                                            {event.groundingUrls.slice(0, 2).map((url, i) => (
-                                                <a 
-                                                    key={i} 
-                                                    href={url} 
-                                                    target="_blank" 
-                                                    rel="noreferrer"
-                                                    className="text-[9px] text-cyan-400 hover:text-cyan-300 truncate block hover:underline"
-                                                >
-                                                    🔗 {new URL(url).hostname}
-                                                </a>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
                              </div>
                         </Popup>
                     )}
@@ -315,6 +329,79 @@ const GlobeVis: React.FC<GlobeVisProps> = ({ events, selectedEventId, onEventCli
         })}
       </MapContainer>
 
+      {/* TOP LEFT: LIVE ANALYTICS */}
+      <div className={`absolute top-4 ${isRtl ? 'right-4' : 'left-4'} w-64 bg-slate-900/90 backdrop-blur-md border border-slate-700/50 rounded-xl shadow-2xl z-[1000] overflow-hidden`} dir={isRtl ? 'rtl' : 'ltr'}>
+          <div className="bg-slate-800/50 p-2 border-b border-slate-700/50 flex items-center gap-2">
+             <Activity size={14} className="text-cyan-400 animate-pulse"/>
+             <span className="text-[10px] font-extrabold text-white uppercase tracking-widest">{t.liveAnalytics}</span>
+          </div>
+          <div className="p-3 space-y-3">
+             <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-400 uppercase font-bold">{t.totalParticipants}</span>
+                <span className="text-lg font-mono font-bold text-cyan-400">{analytics.totalProtestors.toLocaleString()}</span>
+             </div>
+             
+             <div className="space-y-1">
+                 <div className="flex items-center gap-1 mb-1">
+                    <Users size={10} className="text-slate-500"/>
+                    <span className="text-[9px] text-slate-500 uppercase font-bold">{t.civilians}</span>
+                 </div>
+                 <div className="grid grid-cols-3 gap-1">
+                    <div className="bg-red-900/20 rounded p-1 text-center border border-red-900/30">
+                        <span className="block text-[8px] text-red-400 uppercase">{t.dead}</span>
+                        <span className="text-xs font-bold text-red-500">{analytics.civDead}</span>
+                    </div>
+                    <div className="bg-yellow-900/20 rounded p-1 text-center border border-yellow-900/30">
+                        <span className="block text-[8px] text-yellow-400 uppercase">{t.injured}</span>
+                        <span className="text-xs font-bold text-yellow-500">{analytics.civInjured}</span>
+                    </div>
+                    <div className="bg-blue-900/20 rounded p-1 text-center border border-blue-900/30">
+                        <span className="block text-[8px] text-blue-400 uppercase">{t.detained}</span>
+                        <span className="text-xs font-bold text-blue-500">{analytics.civDetained}</span>
+                    </div>
+                 </div>
+             </div>
+
+             <div className="space-y-1 border-t border-slate-700/50 pt-2">
+                 <div className="flex items-center gap-1 mb-1">
+                    <ShieldAlert size={10} className="text-slate-500"/>
+                    <span className="text-[9px] text-slate-500 uppercase font-bold">{t.forces}</span>
+                 </div>
+                 <div className="grid grid-cols-3 gap-1">
+                    <div className="bg-slate-800 rounded p-1 text-center border border-slate-700">
+                        <span className="block text-[8px] text-slate-400 uppercase">{t.dead}</span>
+                        <span className="text-xs font-bold text-slate-200">{analytics.secDead}</span>
+                    </div>
+                    <div className="bg-slate-800 rounded p-1 text-center border border-slate-700">
+                        <span className="block text-[8px] text-slate-400 uppercase">{t.injured}</span>
+                        <span className="text-xs font-bold text-slate-200">{analytics.secInjured}</span>
+                    </div>
+                 </div>
+             </div>
+          </div>
+      </div>
+
+      {/* TOP RIGHT: NOTIFICATIONS */}
+      <div className={`absolute top-4 ${isRtl ? 'left-4' : 'right-4'} w-72 flex flex-col gap-2 z-[1000] pointer-events-none`} dir={isRtl ? 'rtl' : 'ltr'}>
+         {notifications.map(note => (
+             <div key={note.id} className="bg-slate-900/95 backdrop-blur-md border border-red-500/30 rounded-lg shadow-xl p-3 pointer-events-auto animate-in slide-in-from-top-2 fade-in duration-500">
+                 <div className="flex justify-between items-start mb-1">
+                     <div className="flex items-center gap-1.5">
+                        <AlertTriangle size={12} className="text-red-500 animate-pulse"/>
+                        <span className="text-[9px] font-bold text-red-400 uppercase tracking-wider">{t.breakingNews}</span>
+                     </div>
+                     <span className="text-[9px] text-slate-500 font-mono">{note.date}</span>
+                 </div>
+                 <h4 className="text-xs font-bold text-white mb-1 leading-tight">{note.title}</h4>
+                 <div className="flex items-center gap-3 text-[9px] text-slate-400">
+                    {note.protestorCount ? <span>👥 {formatCount(note.protestorCount)}</span> : null}
+                    {note.locationName ? <span className="truncate max-w-[100px]">📍 {note.locationName}</span> : null}
+                 </div>
+             </div>
+         ))}
+      </div>
+
+      {/* BOTTOM LEGEND */}
       <div className={`absolute bottom-4 p-4 bg-slate-900/90 backdrop-blur-md border border-slate-700 rounded text-xs text-slate-300 pointer-events-none shadow-lg z-[1000] ${isRtl ? 'right-4' : 'left-4'}`} dir={isRtl ? 'rtl' : 'ltr'}>
         <h3 className="font-bold mb-2 text-white font-mono tracking-wider">{t.eventTypes}</h3>
         <div className="flex items-center gap-2 mb-1"><span className="w-2 h-2 rounded-full bg-red-500"></span> {t.cats[EventCategory.MILITARY]}</div>

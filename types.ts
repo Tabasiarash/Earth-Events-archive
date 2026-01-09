@@ -24,6 +24,11 @@ export interface Casualties {
   detained: number;
 }
 
+export interface SecurityCasualties {
+  dead: number;
+  injured: number;
+}
+
 export interface IntelEvent {
   id: string;
   title: string;
@@ -42,7 +47,8 @@ export interface IntelEvent {
   reliabilityReason?: string;
   // Analysis fields
   protestorCount?: number; // Estimated number of protestors
-  casualties?: Casualties; // Categorized casualties
+  casualties?: Casualties; // Civilian/Protestor casualties
+  securityCasualties?: SecurityCasualties; // Security Forces casualties
 }
 
 export interface ProcessingStatus {
