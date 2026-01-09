@@ -2,7 +2,7 @@
 
 AI-Driven Geospatial Event Analysis Platform
 
-📌 Project Overview (Recruiter-Friendly)
+📌 Project Overview 
 
 Earth Events Archive is a research-oriented analytical platform that collects, processes, and visualizes real-world events such as political unrest, protests, and conflicts using open-source intelligence (OSINT) and AI-based media analysis.
 
@@ -145,7 +145,7 @@ Earth-Events-archive/
 ├── datasets/          # Structured research data
 └── docs/              # Methodology & findings
 
-🎯 Skills Demonstrated (Recruiter Highlight)
+🎯 Skills Demonstrated 
 
 Data engineering & pipelines
 
