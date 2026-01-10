@@ -13,22 +13,28 @@ export const isRateLimitError = (error: any): boolean => {
     return false;
 };
 
+// Helper to handle potential JSON truncation from model responses
 function repairTruncatedJson(json: string): any {
     try {
-        return JSON.parse(json);
+        // Remove markdown blocks if present
+        let str = json.trim();
+        if (str.startsWith('```')) {
+            str = str.replace(/^```json/, '').replace(/^```/, '').replace(/```$/, '').trim();
+        }
+        return JSON.parse(str);
     } catch (e) {
         let str = json.trim();
         str = str.replace(/```json/g, '').replace(/```/g, '').trim();
+        
+        // Basic attempt to close arrays/objects if truncated
         if (str.startsWith('[')) {
             const lastMatch = str.lastIndexOf('}');
             if (lastMatch !== -1) {
                 try {
-                    const repaired = str.substring(0, lastMatch + 1) + ']';
-                    return JSON.parse(repaired);
+                    return JSON.parse(str.substring(0, lastMatch + 1) + ']');
                 } catch (err) {}
             }
         }
-        // Try object repair for single object responses
         if (str.startsWith('{')) {
              const lastMatch = str.lastIndexOf('}');
              if (lastMatch !== -1) {
@@ -41,15 +47,11 @@ function repairTruncatedJson(json: string): any {
     }
 }
 
+// Proxy fetcher to bypass CORS issues when scraping public intel sources
 async function fetchWithProxyFallback(targetUrl: string): Promise<string> {
-    // Priority: AllOrigins (JSON) -> CorsProxy (Raw) -> CodeTabs (Raw)
     const proxies = [
-        {
-            name: 'AllOrigins',
-            getUrl: (u: string) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
-            isJson: true
-        },
         { name: 'CorsProxy', getUrl: (u: string) => `https://corsproxy.io/?${encodeURIComponent(u)}` },
+        { name: 'AllOrigins', getUrl: (u: string) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, isJson: true },
         { name: 'CodeTabs', getUrl: (u: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}` }
     ];
 
@@ -68,23 +70,16 @@ async function fetchWithProxyFallback(targetUrl: string): Promise<string> {
                 content = await response.text();
             }
 
-            if (!content || content.length < 50) {
-                throw new Error("Content empty or too short");
-            }
-            // Basic check if we got blocked by a captcha
-            if (content.includes("challenge-form") || content.includes("Cloudflare")) {
-                throw new Error("Blocked by Bot Protection");
-            }
+            if (!content || content.length < 50) throw new Error("Content too short");
+            if (content.includes("challenge-form") || content.includes("Cloudflare")) throw new Error("Bot Protected");
 
             return content;
         } catch (error) {
-            console.warn(`Proxy ${proxy.name} failed for ${targetUrl}:`, error);
             lastError = error;
-            // Short delay before next proxy
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, 300));
         }
     }
-    throw new Error(`Failed to access source. All proxies failed. Last error: ${lastError?.message || 'Unknown'}`);
+    throw new Error(`Proxy network failure: ${lastError?.message}`);
 }
 
 export interface SourcePage {
@@ -96,6 +91,9 @@ export interface SourcePage {
     type: SourceType;
 }
 
+/**
+ * Basic source data fetcher (primarily for Telegram scraping).
+ */
 export const fetchSourceData = async (urlInput: string, cursor?: string): Promise<SourcePage> => {
   const url = urlInput.trim();
   let type: SourceType = SourceType.WEB;
@@ -103,19 +101,11 @@ export const fetchSourceData = async (urlInput: string, cursor?: string): Promis
 
   if (url.includes('t.me/')) {
       type = SourceType.TELEGRAM;
-      // Convert to preview URL: t.me/s/channelName
-      if (!url.includes('/s/')) {
-          targetUrl = url.replace('t.me/', 't.me/s/');
-      }
+      if (!url.includes('/s/')) targetUrl = url.replace('t.me/', 't.me/s/');
       if (cursor) {
           const id = cursor.split('/').pop();
           targetUrl += (targetUrl.includes('?') ? '&' : '?') + `before=${id}`;
       }
-  } else if (url.includes('instagram.com/')) {
-      type = SourceType.INSTAGRAM;
-  } else if (url.includes('twitter.com/') || url.includes('x.com/')) {
-      type = SourceType.TWITTER;
-      targetUrl = url.replace('twitter.com', 'nitter.net').replace('x.com', 'nitter.net');
   }
 
   try {
@@ -123,28 +113,27 @@ export const fetchSourceData = async (urlInput: string, cursor?: string): Promis
       const parser = new DOMParser();
       const doc = parser.parseFromString(htmlContent, 'text/html');
       
-      let cleanedText = `SOURCE_URL: ${url}\nPLATFORM: ${type}\n\n`;
+      let cleanedText = `SOURCE: ${url}\n\n`;
       let messageCount = 0;
       let minId = Infinity;
-      let sourceName = url.split('/').filter(p => p).pop()?.replace(/\?.*/, '') || "Source";
+      let sourceName = url.split('/').filter(p => p).pop()?.replace(/\?.*/, '') || "IntelSource";
 
       if (type === SourceType.TELEGRAM) {
           const nodes = doc.querySelectorAll('.tgme_widget_message');
           nodes.forEach(node => {
-              const content = (node.querySelector('.tgme_widget_message_text') as HTMLElement)?.innerText;
+              const textEl = node.querySelector('.tgme_widget_message_text');
+              const content = (textEl as HTMLElement)?.innerText;
               const date = node.querySelector('time')?.getAttribute('datetime');
               const id = node.getAttribute('data-post')?.split('/').pop();
               if (content) {
-                  cleanedText += `ID: ${id}\nDATE: ${date}\nTEXT: ${content}\n---\n`;
+                  cleanedText += `ID: ${id} | DATE: ${date} | MSG: ${content.replace(/\n/g, ' ')}\n`;
                   messageCount++;
                   if (id && parseInt(id) < minId) minId = parseInt(id);
               }
           });
       } else {
-          // General web scraping fallback
-          const bodyText = doc.body.innerText.replace(/\s+/g, ' ').substring(0, 15000);
-          cleanedText += bodyText;
-          messageCount = bodyText.length > 200 ? 1 : 0;
+          cleanedText += doc.body.innerText.substring(0, 15000);
+          messageCount = 1;
       }
 
       return { 
@@ -155,164 +144,38 @@ export const fetchSourceData = async (urlInput: string, cursor?: string): Promis
           type
       };
   } catch (error) {
-      console.error("Fetch Source Data Failed:", error);
+      console.error("Fetch Failed:", error);
       throw error;
   }
 };
 
-export interface ScannedPost {
-    id: string;
-    url: string;
-    text: string;
-    date: string;
-    mediaUrl?: string;
-    mediaType: 'image' | 'video';
-}
-
-export const fetchChannelPosts = async (channelUrl: string): Promise<ScannedPost[]> => {
-    let targetUrl = channelUrl;
-    if (channelUrl.includes('t.me/') && !channelUrl.includes('/s/')) {
-        targetUrl = channelUrl.replace('t.me/', 't.me/s/');
-    }
-
-    try {
-        const html = await fetchWithProxyFallback(targetUrl);
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-        const posts: ScannedPost[] = [];
-
-        const messageNodes = doc.querySelectorAll('.tgme_widget_message');
-        messageNodes.forEach(node => {
-             const id = node.getAttribute('data-post') || uuidv4();
-             const textEl = node.querySelector('.tgme_widget_message_text');
-             const text = (textEl as HTMLElement)?.innerText || '';
-             const timeEl = node.querySelector('time');
-             const date = timeEl?.getAttribute('datetime') || new Date().toISOString();
-             
-             // Check for image (background-image on a div usually)
-             const photoWrap = node.querySelector('.tgme_widget_message_photo_wrap');
-             let mediaUrl: string | undefined;
-             let mediaType: 'image' | 'video' = 'image';
-
-             if (photoWrap) {
-                 const style = photoWrap.getAttribute('style');
-                 const match = style?.match(/url\('?(.*?)'?\)/);
-                 if (match && match[1]) {
-                     mediaUrl = match[1];
-                 }
-             }
-
-             // Check for video
-             const videoWrap = node.querySelector('video');
-             if (videoWrap) {
-                 mediaUrl = videoWrap.getAttribute('src') || undefined;
-                 mediaType = 'video';
-             }
-
-             if (mediaUrl) {
-                 posts.push({ id, url: `https://t.me/${id}`, text, date, mediaUrl, mediaType });
-             }
-        });
-        return posts;
-
-    } catch (e) {
-        console.error("Failed to fetch channel posts", e);
-        return [];
-    }
-};
-
-// Helper to extract image/video URL from HTML for crowd counting
-export const extractMediaUrlFromPage = async (url: string): Promise<string | null> => {
-    try {
-        let targetUrl = url;
-        
-        // Telegram preview fix
-        if (url.includes('t.me/') && !url.includes('/s/')) {
-            targetUrl = url.replace('t.me/', 't.me/s/');
-        }
-
-        // Twitter/X fix (Use Nitter)
-        if (url.includes('x.com/') || url.includes('twitter.com/')) {
-            targetUrl = url.replace('x.com', 'nitter.net').replace('twitter.com', 'nitter.net');
-        }
-
-        const html = await fetchWithProxyFallback(targetUrl);
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-        
-        // Priority 1: OpenGraph Video (Most reliable for video understanding)
-        const ogVideo = doc.querySelector('meta[property="og:video"]')?.getAttribute('content') ||
-                        doc.querySelector('meta[property="og:video:url"]')?.getAttribute('content') ||
-                        doc.querySelector('meta[property="og:video:secure_url"]')?.getAttribute('content');
-        if (ogVideo) return ogVideo;
-
-        // Priority 2: OpenGraph Image
-        const ogImage = doc.querySelector('meta[property="og:image"]')?.getAttribute('content') || 
-                        doc.querySelector('meta[property="og:image:url"]')?.getAttribute('content');
-        if (ogImage) return ogImage;
-
-        // Priority 3: Twitter Cards
-        const twitterImage = doc.querySelector('meta[name="twitter:image"]')?.getAttribute('content');
-        if (twitterImage) return twitterImage;
-        const twitterPlayer = doc.querySelector('meta[name="twitter:player:stream"]')?.getAttribute('content');
-        if (twitterPlayer) return twitterPlayer;
-
-        // Priority 4: First substantial image
-        const imgs = doc.querySelectorAll('img');
-        for (let i = 0; i < imgs.length; i++) {
-            const src = imgs[i].src;
-            if (src && src.startsWith('http') && imgs[i].width > 200) return src;
-        }
-        
-        return null;
-    } catch (e) {
-        console.error("Failed to extract media", e);
-        return null;
-    }
-};
-
+/**
+ * Multimodal analysis for crowd counting and geolocation using Gemini 3 Flash.
+ * Optimized for standard API keys.
+ */
 export const analyzeCrowdPost = async (base64Data: string, mimeType: string, contextText: string): Promise<CrowdAnalysisResult | null> => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const isVideo = mimeType.startsWith('video');
 
     const prompt = `
-      You are an expert Crowd Safety and Reconnaissance Analyst specializing in PRECISE CROWD COUNTING.
-      Analyze the provided visual media (${isVideo ? 'VIDEO/CLIP' : 'IMAGE'}) and the accompanying text context.
-      
+      TACTICAL INTEL ANALYSIS: MEDIA ANALYSIS (${isVideo ? 'VIDEO' : 'IMAGE'})
       CONTEXT: ${contextText}
 
-      YOUR TASKS:
-      1. **PRECISE CROWD ESTIMATION (CRITICAL)**:
-         - Use a visual grid estimation technique. Divide the visible area into sectors, estimate density (people per m²), and sum them up.
-         - Do NOT return vague ranges like "hundreds" or "thousands" if a narrower range is visible.
-         - If the image is high resolution, try to count individual heads in the foreground and extrapolate.
-         - Provide a tight min/max range.
-
-      2. Identify the LOCATION (City, Neighborhood, Landmark) based on the text and visual cues. 
-         - **REQUIRED**: You MUST estimate the numeric latitude and longitude for this location. Do not return null. If the city is known, use the city center. If a landmark is known, use the landmark.
-
-      3. Identify the DATE of the event based on the text or visual metadata cues.
-
-      4. Analyze the crowd's behavior (e.g., Peaceful protest, Riot, Panic).
-
-      5. Identify potential hazards (e.g., fires, blocked exits, weapons).
-      
-      ${isVideo ? `
-      6. VIDEO SPECIFIC ANALYSIS:
-         - Describe the movement/flow.
-         - Note temporal changes.
-         - Note audio cues if implied by context.
-      ` : ''}
+      OBJECTIVES:
+      1. CROWD COUNT: Be precise. Estimate based on visible density.
+      2. GEOLOCATION: Extract street-level data from signs, architecture, or metadata.
+      3. COORDINATES: Provide estimated [Lat, Lng] for the specific street/landmark.
+      4. THREAT LEVEL: Identify fires, weapons, arrests, or casualties.
 
       OUTPUT FORMAT (JSON ONLY):
       {
-        "minEstimate": integer,
-        "maxEstimate": integer,
-        "confidence": "High" | "Medium" | "Low",
+        "minEstimate": int,
+        "maxEstimate": int,
+        "confidence": "High"|"Medium"|"Low",
         "crowdType": "string",
-        "description": "string (max 50 words)",
+        "description": "string",
         "hazards": ["string"],
-        "location": "string",
+        "location": "Detailed Street/City",
         "lat": float,
         "lng": float,
         "date": "YYYY-MM-DD"
@@ -321,7 +184,7 @@ export const analyzeCrowdPost = async (base64Data: string, mimeType: string, con
 
     try {
         const response = await ai.models.generateContent({
-            model: 'gemini-3-pro-preview', 
+            model: 'gemini-3-flash-preview', 
             contents: {
                 parts: [
                     { inlineData: { mimeType, data: base64Data } },
@@ -329,130 +192,46 @@ export const analyzeCrowdPost = async (base64Data: string, mimeType: string, con
                 ]
             },
             config: {
-                responseMimeType: "application/json",
-                thinkingConfig: { thinkingBudget: 4000 } // Increased thinking budget for calculation
+                responseMimeType: "application/json"
             }
         });
-
-        const text = response.text || "{}";
-        const result = repairTruncatedJson(text);
-
-        return {
-            minEstimate: result.minEstimate || 0,
-            maxEstimate: result.maxEstimate || 0,
-            confidence: result.confidence || 'Low',
-            crowdType: result.crowdType || 'Unknown',
-            description: result.description || 'Analysis failed.',
-            hazards: Array.isArray(result.hazards) ? result.hazards : [],
-            location: result.location,
-            lat: result.lat,
-            lng: result.lng,
-            date: result.date
-        };
+        return repairTruncatedJson(response.text);
     } catch (e) {
-        console.error("Crowd analysis failed", e);
+        console.error("Media analysis failed", e);
         throw e;
     }
 };
 
-// Legacy support for direct media only
-export const analyzeCrowdMedia = async (base64Data: string, mimeType: string): Promise<CrowdAnalysisResult | null> => {
-    return analyzeCrowdPost(base64Data, mimeType, "No context provided.");
-};
-
-export const generateSituationReport = async (events: IntelEvent[], language: AppLanguage): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  // Create a condensed representation of events to save tokens
-  const condensedEvents = events.slice(0, 80).map(e => ({
-      date: e.date,
-      category: e.category,
-      title: e.title,
-      location: e.locationName,
-      casualties: e.casualties
-  }));
-
-  const langName = { 'en': 'English', 'de': 'German', 'fa': 'Farsi', 'ar': 'Arabic' }[language];
-
-  const prompt = `
-    ROLE: Senior Intelligence Analyst.
-    TASK: Write a concise "Situation Report" (SITREP) based on the provided event logs.
-    LANGUAGE: Write the report in ${langName}.
-    
-    DATA:
-    ${JSON.stringify(condensedEvents)}
-
-    REQUIREMENTS:
-    1. STRUCTURE:
-       - **Executive Summary**: 1 sentence overview.
-       - **Key Escalations**: Bullet points of major military or political shifts.
-       - **Casualty Assessment**: Summary of human impact.
-       - **Outlook**: Predicted short-term trajectory based on these events.
-    2. TONE: Professional, objective, military/intelligence style.
-    3. FORMAT: Markdown.
-  `;
-
-  try {
-      const response = await ai.models.generateContent({
-          model: 'gemini-3-flash-preview',
-          contents: prompt,
-      });
-      return response.text || "Failed to generate report.";
-  } catch (e) {
-      return "Error generating situation report. Please check API Key or quota.";
-  }
-};
-
+/**
+ * Extracts intelligence events from scraped text data using Gemini 3 Flash.
+ */
 export const parseIntelContent = async (inputContent: string, type: SourceType, language: AppLanguage = 'en', regionFocus?: string): Promise<IntelEvent[]> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  const spatialConstraint = regionFocus && regionFocus.trim().length > 0 
-    ? `IMPORTANT SPATIAL CONSTRAINT: ONLY extract events within "${regionFocus}".` 
-    : "";
-
   const prompt = `
-    OSINT ANALYST MISSION:
-    Analyze the following social media/news data.
+    GEO-INT EXTRACTION:
+    PROCESS DATA: ${inputContent.substring(0, 25000)}
+    FOCUS REGION: ${regionFocus || "Global"}
+
+    EXTRACT EVENTS:
+    - CATEGORY: Military, Political, Cyber, Terrorism, Civil Unrest, Other
+    - COORDINATES: Accurate Lat/Lng for specific neighborhood or city centers.
+    - COUNTS: Protestor estimates (Integer).
+    - CASUALTIES: dead, injured, detained.
     
-    INPUT:
-    ${inputContent.substring(0, 30000)}
-    
-    ${spatialConstraint}
-
-    OBJECTIVE:
-    1. Identify discrete geographical events.
-    2. ESTIMATE AND CALCULATE NUMBERS: 
-       - Look for crowd sizes, participant counts, or protestor numbers. Use exact numbers if available.
-       - Look for casualties and CATEGORIZE them into: 
-          a) CIVILIANS/PROTESTORS: Dead (martyred/killed), Injured (wounded), Detained.
-          b) SECURITY FORCES: Dead, Injured.
-    3. BE GRANULAR: Separate entries for each city/location.
-
-    EXTRACTION RULES:
-    - If no specific number is found, leave as null or 0.
-    - If a range is provided (e.g. "100-200 people"), use the mid-point or the most reliable estimate.
-    - Return valid JSON.
-
-    JSON Schema:
+    RESPONSE SCHEMA: JSON ARRAY ONLY.
     [{
-      "title": "string",
-      "summary": "string",
-      "category": "Military|Political|Cyber|Terrorism|Civil Unrest|Other",
+      "title": "Short title",
+      "summary": "Brief analysis",
+      "category": "Enum",
       "date": "YYYY-MM-DD",
-      "locationName": "string",
+      "locationName": "City, Province, Country",
       "lat": float,
       "lng": float,
-      "reliabilityScore": 1-10,
-      "protestorCount": integer|null,
-      "casualties": {
-         "dead": integer,
-         "injured": integer,
-         "detained": integer
-      },
-      "securityCasualties": {
-         "dead": integer,
-         "injured": integer
-      }
+      "sourceId": "id",
+      "protestorCount": int,
+      "casualties": {"dead": int, "injured": int, "detained": int},
+      "securityCasualties": {"dead": int, "injured": int}
     }]
   `;
 
@@ -461,42 +240,169 @@ export const parseIntelContent = async (inputContent: string, type: SourceType, 
       model: 'gemini-3-flash-preview',
       contents: prompt,
       config: {
-        tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
-        thinkingConfig: { thinkingBudget: 4000 }
       }
     });
 
-    const text = response.text || "[]";
-    const parsed = repairTruncatedJson(text);
-    
+    const parsed = repairTruncatedJson(response.text || "[]");
     if (!Array.isArray(parsed)) return [];
 
     return parsed.map((item: any) => ({
       id: uuidv4(),
-      title: item.title || "Untitled Event",
+      title: item.title || "Unknown Event",
       summary: item.summary || "",
       category: item.category as EventCategory || EventCategory.OTHER,
       date: item.date || new Date().toISOString().split('T')[0],
       locationName: item.locationName || "Unknown",
-      lat: typeof item.lat === 'number' ? item.lat : 0,
-      lng: typeof item.lng === 'number' ? item.lng : 0,
-      reliabilityScore: item.reliabilityScore || 5,
-      protestorCount: item.protestorCount || 0,
+      lat: Number(item.lat) || 0,
+      lng: Number(item.lng) || 0,
+      reliabilityScore: 7,
+      sourceId: item.sourceId,
+      protestorCount: Number(item.protestorCount) || 0,
       casualties: {
-        dead: item.casualties?.dead || 0,
-        injured: item.casualties?.injured || 0,
-        detained: item.casualties?.detained || 0
+        dead: Number(item.casualties?.dead) || 0,
+        injured: Number(item.casualties?.injured) || 0,
+        detained: Number(item.casualties?.detained) || 0
       },
       securityCasualties: {
-        dead: item.securityCasualties?.dead || 0,
-        injured: item.securityCasualties?.injured || 0
+        dead: Number(item.securityCasualties?.dead) || 0,
+        injured: Number(item.securityCasualties?.injured) || 0
       },
       sourceType: type,
-      sourceUrl: inputContent.split('\n')[0].replace('SOURCE_URL: ', '')
+      sourceUrl: inputContent.split('\n')[0].replace('SOURCE: ', '')
     }));
   } catch (e) {
     console.error("AI Extraction failed", e);
     return [];
   }
 };
+
+/**
+ * Synthesizes a situation report based on a list of intelligence events.
+ */
+export const generateSituationReport = async (events: IntelEvent[], language: AppLanguage): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const data = events.slice(0, 50).map(e => `${e.date}|${e.locationName}|${e.title}`);
+  
+  const prompt = `Generate a tactical SITREP in ${language === 'fa' ? 'Persian' : 'English'}. Data: ${data.join('; ')}`;
+  
+  try {
+      const response = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview',
+          contents: prompt,
+      });
+      return response.text || "Report generation failed.";
+  } catch (e) {
+      return "Critical error in report synthesis.";
+  }
+};
+
+/**
+ * Enables conversational analysis of intelligence data.
+ */
+export const chatWithIntel = async (userMessage: string, contextEvents: IntelEvent[], language: AppLanguage, history: {role: 'user' | 'model', text: string}[]): Promise<string> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const context = contextEvents.map(e => `[${e.date}] ${e.title} in ${e.locationName}`).join('\n');
+    
+    try {
+        const chat = ai.chats.create({
+            model: 'gemini-3-flash-preview',
+            config: { systemInstruction: `Analyst Mode. Context: ${context}` },
+            history: history.map(h => ({ role: h.role, parts: [{ text: h.text }] }))
+        });
+        const result = await chat.sendMessage({ message: userMessage });
+        return result.text || "No analysis available.";
+    } catch (e) {
+        return "System offline.";
+    }
+};
+
+/**
+ * Generates cinematic tactical drone footage using Veo 3.1 Fast.
+ * Note: This specific feature requires a paid tier key if triggered.
+ */
+export const generateVideoBriefing = async (reportContent: string, language: AppLanguage): Promise<string | null> => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    try {
+        let operation = await ai.models.generateVideos({
+            model: 'veo-3.1-fast-generate-preview',
+            prompt: `Cinematic tactical drone footage over a city at night with digital UI overlays, map indicators, 4k.`,
+            config: { numberOfVideos: 1, resolution: '720p', aspectRatio: '16:9' }
+        });
+
+        while (!operation.done) {
+            await new Promise(resolve => setTimeout(resolve, 8000));
+            operation = await ai.operations.getVideosOperation({ operation: operation });
+        }
+
+        return operation.response?.generatedVideos?.[0]?.video?.uri ? `${operation.response.generatedVideos[0].video.uri}&key=${process.env.API_KEY}` : null;
+    } catch (e) {
+        console.error("Video Gen Error:", e);
+        return null;
+    }
+};
+
+/**
+ * Fetches multiple structured posts from a channel (e.g., Telegram).
+ */
+export const fetchChannelPosts = async (url: string): Promise<{id: string, text: string, url: string, mediaUrl?: string}[]> => {
+    try {
+        let targetUrl = url;
+        if (url.includes('t.me/') && !url.includes('/s/')) {
+            targetUrl = url.replace('t.me/', 't.me/s/');
+        }
+        const html = await fetchWithProxyFallback(targetUrl);
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const posts: {id: string, text: string, url: string, mediaUrl?: string}[] = [];
+        
+        const nodes = doc.querySelectorAll('.tgme_widget_message');
+        nodes.forEach(node => {
+            const textEl = node.querySelector('.tgme_widget_message_text');
+            const text = (textEl as HTMLElement)?.innerText || "";
+            const id = node.getAttribute('data-post')?.split('/').pop() || "";
+            const postUrl = node.querySelector('.tgme_widget_message_date')?.getAttribute('href') || url;
+            
+            const photoEl = node.querySelector('.tgme_widget_message_photo_wrap');
+            let mediaUrl: string | undefined;
+            if (photoEl) {
+                const style = photoEl.getAttribute('style');
+                const match = style?.match(/url\(['"]?([^'"]+)['"]?\)/);
+                if (match) {
+                    mediaUrl = match[1];
+                }
+            }
+            
+            if (text || mediaUrl) {
+                posts.push({ id, text, url: postUrl, mediaUrl });
+            }
+        });
+        return posts;
+    } catch (error) {
+        console.error("fetchChannelPosts error:", error);
+        return [];
+    }
+};
+
+/**
+ * Extracts a candidate media URL (image) from a public web page.
+ */
+export const extractMediaUrlFromPage = async (url: string): Promise<string | null> => {
+    try {
+        const html = await fetchWithProxyFallback(url);
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const ogImage = doc.querySelector('meta[property="og:image"]')?.getAttribute('content');
+        if (ogImage) return ogImage;
+        const img = doc.querySelector('img');
+        return img ? img.src : null;
+    } catch (error) {
+        console.error("extractMediaUrlFromPage error:", error);
+        return null;
+    }
+};
+
+/**
+ * Alias for crowd analysis media input.
+ */
+export const analyzeCrowdMedia = analyzeCrowdPost;
